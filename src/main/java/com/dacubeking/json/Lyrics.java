@@ -11,10 +11,10 @@ public class Lyrics {
 
     public String language;
 
-    public ArrayList<TimedLyrics> lyrics;
+    public ArrayList<TimedLyric> lyrics;
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record TimedLyrics(long startTimeMs, long durationMs, String words, long[] wordRelativeTimings){}
+    public record TimedLyric(long startTimeMs, long durationMs, String words, long[] wordRelativeTimingsStart, long[] wordRelativeTimingsEnd) {}
 
     public String trackId;
 }

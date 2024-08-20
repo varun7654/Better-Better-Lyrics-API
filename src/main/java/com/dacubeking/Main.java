@@ -19,6 +19,7 @@ import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Supplier;
 
 public class Main {
 
@@ -48,7 +49,7 @@ public class Main {
             //System.out.printf("Song %s, Artist %s, VideoID %s%n", song.get().getValue(), artist.get().getValue(), videoId.get().getValue());
 
 
-            Optional<String> lyricsJson = ProcessLyrics.getLyrics(videoId.get().getValue(), () -> {
+            Optional<String> lyricsJson = ProcessLyrics.getLyrics(videoId.get().getValue(), (Supplier<Optional<Lyrics>>) () -> {
                 HttpClient client = HttpClient.newHttpClient();
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create("https://lyrics-api.boidu.dev/getLyrics?s="
