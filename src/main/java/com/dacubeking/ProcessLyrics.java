@@ -17,13 +17,13 @@ import java.util.stream.Collectors;
 
 public class ProcessLyrics {
     private static final DiffMatchPatch dmp = new DiffMatchPatch();
+    private static final HashSet<String> commonWords = new HashSet<>(10000);
+    private static final Hashtable<String, ReentrantReadWriteLock> lyricProcessingLocks = new Hashtable<>();
 
     static {
         dmp.matchDistance = 100;
     }
 
-
-    private static final HashSet<String> commonWords = new HashSet<>(10000);
     static {
         try {
             commonWords.addAll(Files.readAllLines(Path.of("google-10000-english.txt")));
@@ -31,9 +31,6 @@ public class ProcessLyrics {
             throw new RuntimeException(e);
         }
     }
-
-
-    private static final Hashtable<String, ReentrantReadWriteLock> lyricProcessingLocks = new Hashtable<>();
 
     public static Optional<String> getLyrics(String videoId, Supplier<Optional<Lyrics>> getLyrics) {
         ReadWriteLock lock = lyricProcessingLocks.computeIfAbsent(videoId, k -> new ReentrantReadWriteLock());
@@ -63,8 +60,8 @@ public class ProcessLyrics {
                     var lyrics = getLyrics.get();
                     Lyrics processedLyrics;
                     try {
-                         processedLyrics = processLyrics(videoId, lyrics);
-                    } catch (Exception e){
+                        processedLyrics = processLyrics(videoId, lyrics);
+                    } catch (Exception e) {
                         e.printStackTrace();
                         return Optional.empty();
                     }
@@ -92,7 +89,7 @@ public class ProcessLyrics {
 
         String audioPath = "./data/music_downloads/" + videoId + ".webm";
 
-        if (!Files.exists(Path.of("/data/music_downloads/" + videoId + ".webm"))) {
+        if (!Files.exists(Path.of("'/data/music_downloads/" + videoId + ".webm'"))) {
             // Download music
             String[] command = new String[]{"yt-dlp", "-f", "bestaudio", "-o", audioPath, videoId};
             try {
@@ -106,11 +103,12 @@ public class ProcessLyrics {
 
         ArrayList<String> originalWords = new ArrayList<>();
         StringBuilder prompt = new StringBuilder();
+        Lyrics originalLyrics = null;
         if (optionalLyrics.isPresent()) {
-            Lyrics originalLyrics = optionalLyrics.get();
+             originalLyrics = optionalLyrics.get();
             for (Lyrics.TimedLyric originalLyric : originalLyrics.lyrics) {
                 String[] words = originalLyric.words().split(" ");
-                if (words.length > 0){
+                if (words.length > 0) {
                     var lastWord = words[words.length - 1];
                     if (!lastWord.endsWith("\n")) {
                         lastWord = lastWord + "\n";
@@ -120,16 +118,43 @@ public class ProcessLyrics {
                 originalWords.addAll(Arrays.asList(words));
             }
 
+            var originalWordsParenCombined = new ArrayList<>(originalWords);
+
+            long parenDepth = 0;
+            for (int i = 0; i < originalWordsParenCombined.size(); i++) {
+                var word = originalWordsParenCombined.get(i);
+                long openParenCount = word.chars().filter(ch -> ch == '(').count();
+                long closedParenCount = word.chars().filter(ch -> ch == ')').count();
+
+                if (parenDepth > 0) {
+                    originalWordsParenCombined.add(
+                            i - 1,
+                            originalWordsParenCombined.get(i - 1) + " " + word
+                    );
+                    originalWordsParenCombined.remove(i);
+                    originalWordsParenCombined.remove(i);
+                    i -= 1;
+                } else {
+                    originalWordsParenCombined.add(i, word.replace(",", ""));
+                    originalWordsParenCombined.remove(i + 1);
+                }
+                parenDepth = parenDepth + openParenCount - closedParenCount;
+            }
+
             HashMap<String, Integer> uncommonWordCounts = new HashMap<>();
-            originalWords.stream().map(String::toLowerCase).filter(word -> !commonWords.contains(word))
+            originalWordsParenCombined.stream().map(String::toLowerCase).filter(word -> !commonWords.contains(word))
+                    .map(w -> w.toLowerCase().replace("\n", ""))
                     .forEach(word -> uncommonWordCounts.merge(word, 1, Integer::sum));
 
             var sortedUncommonWords = uncommonWordCounts.entrySet().stream().sorted(Map.Entry.comparingByValue(Comparator.reverseOrder())).toList();
 
-            // to be safe we can only add about 100 words
-            for (int i = 0; i < 100; i++) {
-                prompt.append(originalWords.get(i)).append(" ");
+            for (int i = 0; i < 70; i++) {
+                if (i >= sortedUncommonWords.size() - 1){
+                    break;
+                }
+                prompt.append(sortedUncommonWords.get(i).getKey()).append(" ");
             }
+            System.out.println(prompt);
 
         }
 
@@ -184,7 +209,6 @@ public class ProcessLyrics {
 
             int originalWordsIndex = 0;
             int transcribedWordsIndex = 0;
-            boolean hasTrailingSpace = false;
 
             TempLyric tempLyric = new TempLyric();
 
@@ -208,7 +232,7 @@ public class ProcessLyrics {
                 if (diff.operation == DiffMatchPatch.Operation.EQUAL) {
                     var wordsToAdd = countSpaces(diff.text);
                     for (int j = 0; j < wordsToAdd; j++) {
-                        tempLyric.addNewWord(originalWords.get(originalWordsIndex), transcribedWords.get(transcribedWordsIndex), lyrics);
+                        tempLyric.addNewWord(originalWords.get(originalWordsIndex), transcribedWords.get(transcribedWordsIndex), lyrics, originalLyrics);
                         System.out.printf("Matched: %s -> %s, index: %d, %d%n", originalWords.get(originalWordsIndex), transcribedWords.get(transcribedWordsIndex), originalWordsIndex, transcribedWordsIndex);
                         originalWordsIndex++;
                         transcribedWordsIndex++;
@@ -219,22 +243,23 @@ public class ProcessLyrics {
                     long wordsInThisDiff = 0;
                     long wordsInNextDiff = 0;
                     if (isNextItem) {
-                         isNextOperationOpposite = diffs.get(i + 1).operation == oppositeOperations.get(diff.operation);
-                         wordsInThisDiff = countSpaces(diff.text);
-                         wordsInNextDiff = countSpaces(diffs.get(i + 1).text);
+                        isNextOperationOpposite = diffs.get(i + 1).operation == oppositeOperations.get(diff.operation);
+                        wordsInThisDiff = countSpaces(diff.text);
+                        wordsInNextDiff = countSpaces(diffs.get(i + 1).text);
                     }
 
                     if (isNextItem && isNextOperationOpposite && (wordsInThisDiff == wordsInNextDiff)) {
                         // Some words were switched around
                         var wordsToAdd = countSpaces(diff.text);
                         for (int j = 0; j < wordsToAdd; j++) {
-                            tempLyric.addNewWord(originalWords.get(originalWordsIndex), transcribedWords.get(transcribedWordsIndex), lyrics);
+                            tempLyric.addNewWord(originalWords.get(originalWordsIndex), transcribedWords.get(transcribedWordsIndex), lyrics, originalLyrics);
                             System.out.printf("Mismatched: %s -> %s, index: %d, %d%n", originalWords.get(originalWordsIndex), transcribedWords.get(transcribedWordsIndex), originalWordsIndex, transcribedWordsIndex);
                             originalWordsIndex++;
                             transcribedWordsIndex++;
                         }
                     } else if (diff.operation == DiffMatchPatch.Operation.INSERT) {
-                        var wordsToAdd = countSpaces(diff.text);;
+                        var wordsToAdd = countSpaces(diff.text);
+                        ;
                         // Drop these words from the transcript
                         for (int j = 0; j < wordsToAdd; j++) {
                             System.out.printf("Extra Word: %s, Diff: %s index: %d, %d%n", transcribedWords.get(transcribedWordsIndex), diff.text, originalWordsIndex, transcribedWordsIndex);
@@ -254,13 +279,13 @@ public class ProcessLyrics {
                         }
 
                         double eachWordTime = (nextTranscribedWordBegin - lastTranscribedWordEnd) / (double) (wordsToAdd + 1);
-                        System.out.printf("Word Each Time %f, lastEnd %f, nextStart %f, words to add %d %n",eachWordTime, lastTranscribedWordEnd, nextTranscribedWordBegin, wordsToAdd);
+                        System.out.printf("Word Each Time %f, lastEnd %f, nextStart %f, words to add %d %n", eachWordTime, lastTranscribedWordEnd, nextTranscribedWordBegin, wordsToAdd);
 
                         for (int j = 0; j < wordsToAdd; j++) {
                             var start = lastTranscribedWordEnd + eachWordTime * (j + 1);
                             var end = lastTranscribedWordEnd + eachWordTime * (j + 2);
                             System.out.printf("Missing Word: %s, Diff: %s, Placing @ %s index: %d, %d%n", originalWords.get(originalWordsIndex), diff.text, start, originalWordsIndex, transcribedWordsIndex);
-                            tempLyric.addNewWord(originalWords.get(originalWordsIndex), start, end, lyrics);
+                            tempLyric.addNewWord(originalWords.get(originalWordsIndex), start, end, lyrics, originalLyrics);
                             originalWordsIndex++;
                         }
                     }
@@ -281,19 +306,36 @@ public class ProcessLyrics {
         return lyrics;
     }
 
+    private static long countSpaces(String string) {
+        return string.chars().filter(ch -> ch == ' ').count();
+    }
+
+    private static long countSpacesExceptLast(String string) {
+        long count = countSpaces(string);
+        if (endsWithSpace(string)) {
+            count -= 1;
+        }
+        return count;
+    }
+
+    private static boolean endsWithSpace(String string) {
+        return string.charAt(string.length() - 1) == ' ';
+    }
+
     private static class TempLyric {
         StringBuilder tempWords = new StringBuilder();
         ArrayList<Long> tempTimingStartsMs = new ArrayList<>();
         ArrayList<Long> tempTimingEndsMs = new ArrayList<>();
         long startTime = 0;
 
-        private void addNewWord(String word, Words matchingTranscribedWord, Lyrics lyrics) {
-            addNewWord(word, matchingTranscribedWord.getStart(), matchingTranscribedWord.getEnd(), lyrics);
+        private void addNewWord(String word, Words matchingTranscribedWord, Lyrics lyrics, Lyrics originalLyrics) {
+            addNewWord(word, matchingTranscribedWord.getStart(), matchingTranscribedWord.getEnd(), lyrics, originalLyrics);
         }
 
-        private void addNewWord(String word, double startTimeS, double endTimeS,  Lyrics lyrics) {
+        private void addNewWord(String word, double startTimeS, double endTimeS, Lyrics lyrics, Lyrics originalLyrics) {
             if (tempWords.isEmpty()) {
-                startTime = (long) (startTimeS * 1000L);
+                startTime = originalLyrics.lyrics.get(lyrics.lyrics.size()).startTimeMs();
+
             }
 
             tempWords.append(word);
@@ -323,21 +365,5 @@ public class ProcessLyrics {
                     tempTimingEndsMs.stream().mapToLong(l -> l).toArray()
             );
         }
-    }
-
-    private static long countSpaces(String string) {
-        return string.chars().filter(ch -> ch == ' ').count();
-    }
-
-    private static long countSpacesExceptLast(String string) {
-        long count = countSpaces(string);
-        if (endsWithSpace(string)) {
-            count -= 1;
-        }
-        return count;
-    }
-
-    private static boolean endsWithSpace(String string) {
-        return string.charAt(string.length() - 1) == ' ';
     }
 }
