@@ -9,11 +9,12 @@ import java.nio.file.Files;
 import java.time.Duration;
 import java.util.Hashtable;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class OpenAI {
     private static OpenAiService service;
 
-    private static Hashtable<String, TranscriptionResult> transcriptionResultCache = new Hashtable<>();
+    private static ConcurrentHashMap<String, TranscriptionResult> transcriptionResultCache = new ConcurrentHashMap<>();
 
     static {
         service = new OpenAiService(Duration.ofSeconds(30));
